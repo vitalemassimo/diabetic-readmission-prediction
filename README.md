@@ -21,7 +21,7 @@ That's the standard this project is held to:
 
 ## Dataset
 
-- **Source:** [Diabetes 130-US Hospitals for Years 1999-2008](https://www.kaggle.com/datasets/brandao/diabetes) (Kaggle mirror of the UCI dataset)
+- **Source:** [Diabetes 130-US Hospitals for Years 1999-2008](https://archive.ics.uci.edu/dataset/296/diabetes+130-us+hospitals+for+years+1999-2008) (UCI Machine Learning Repository)
 - **Size:** ~100,000 encounters, 50 features
 - **Target:** `readmitted` column (`<30`, `>30`, `NO`) — collapsed to binary: readmitted within 30 days (1) vs. not (0)
 - **License / access:** Public, no credentialing required
