@@ -25,6 +25,9 @@ That's the standard this project is held to:
 - **Size:** ~100,000 encounters, 50 features
 - **Target:** `readmitted` column (`<30`, `>30`, `NO`) — collapsed to binary: readmitted within 30 days (1) vs. not (0)
 - **License / access:** Public, no credentialing required
+- **Citation:** Strack, B., DeShazo, J.P., Gennings, C., Olmo, J.L., Ventura, S., Cios, K.J., Clore, J.N.
+(2014). "Impact of HbA1c Measurement on Hospital Readmission Rates: Analysis of 70,000 Clinical
+Database Patient Records." *BioMed Research International*, vol. 2014, Article ID 781670, 11 pages.
 
 > Note: raw data is not committed to this repo (see `data/raw/README.md` for download instructions). Only code and processed artifacts (where small enough) are versioned.
 
