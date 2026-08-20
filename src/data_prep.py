@@ -1,6 +1,4 @@
 from pathlib import Path
-import csv
-import io
 from sklearn.model_selection import GroupShuffleSplit
 import pandas as pd
 
