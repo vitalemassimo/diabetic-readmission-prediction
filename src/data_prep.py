@@ -3,7 +3,7 @@ Leakage-safe preprocessing pipeline for the diabetic readmission dataset.
 
 Encounters that are definitionally invalid for the target (expired or
 discharged to hospice) are excluded, rows with missing race/diagnosis
-codes are dropped, and the data is split by patient (not by row) before
+codes are dropped, and the data is split by patient before
 any statistic-learning step, so no information about a given patient
 crosses from train into test.
 """
@@ -92,7 +92,7 @@ def handle_lab_result_missingness(df):
     Recode missing A1C and glucose serum results as 'Not Tested'.
 
     These labs are missing because the test was not ordered, not because
-    a result was lost — that is itself clinically meaningful (it tells us
+    a result was lost, that is itself clinically meaningful (it tells us
     something about how the patient was being managed), so it is encoded
     as its own category rather than imputed as a numeric/ordinal value.
     """
@@ -121,7 +121,7 @@ def split_data(df, test_size=0.2, random_state=42):
 
 def load_discharge_map():
     """
-    Parse IDS_mapping.csv into a {code: human-readable label} dict for
+    Parse IDS_mapping.csv into a dict for
     discharge_disposition_id.
 
     The raw file needed for feature engineering is only the numeric code;
@@ -162,42 +162,42 @@ def add_discharge_label(df, discharge_map):
     return df
 
 
-def fit_discharge_bucket_categories(train_df, min_count=500):
+def fit_bucket_categories(train_df, column, min_count=500):
     """
-    Learn which discharge disposition labels are common enough to keep
-    as their own category, using train only.
+    Learn which categories of a column are common enough to keep as their
+    own value, using train only.
 
-    Rare categories are collapsed to 'Other' downstream to avoid a model
-    learning noisy, low-sample-size patterns for categories it will barely
-    see. The threshold is fit on train only, and the same fitted set is
-    applied to test, so the two datasets always share an identical
-    category schema — necessary for one-hot encoding to line up.
+    Generalizes the discharge-disposition-specific version to any column,
+    since medical_specialty and payer_code have the same high-cardinality
+    problem: most categories have too few patients for a model to learn a
+    reliable pattern from, so rare categories get collapsed to 'Other'.
+    The threshold is fit on train only and reused on test, for the same
+    schema-consistency reason established for discharge_bucket.
     """
-    counts = train_df['discharge_disposition_label'].value_counts()
+    counts = train_df[column].value_counts()
     allowed = set(counts[counts >= min_count].index) - {'NULL', 'Not Mapped'}
     return allowed
 
 
-def apply_discharge_bucket(df, allowed_categories):
+def apply_bucket(df, column, allowed_categories, new_column):
     """
-    Map each row's discharge label to its bucket, using a pre-fitted
-    category set (never re-fit on the df being transformed).
+    Map a column's raw values to a bucketed version, using a pre-fitted
+    category set.
 
     'NULL'/'Not Mapped' become 'Unknown' (genuinely missing information).
-    Anything not in allowed_categories becomes 'Other' — including labels
-    that may be common in this df but were not common enough in train,
-    since the model can only have learned from what it saw during fitting.
+    Anything not in allowed_categories becomes 'Other', including values
+    that may be common in this df but were not common enough in train.
     """
     df = df.copy()
 
-    def bucket(label):
-        if label in ('NULL', 'Not Mapped'):
+    def bucket(value):
+        if value in ('NULL', 'Not Mapped'):
             return 'Unknown'
-        if label in allowed_categories:
-            return label
+        if value in allowed_categories:
+            return value
         return 'Other'
 
-    df['discharge_bucket'] = df['discharge_disposition_label'].apply(bucket)
+    df[new_column] = df[column].apply(bucket)
     return df
 
 
@@ -214,11 +214,29 @@ if __name__ == "__main__":
     train_df = add_discharge_label(train_df, discharge_map)
     test_df = add_discharge_label(test_df, discharge_map)
 
-    allowed_categories = fit_discharge_bucket_categories(train_df)
-    train_df = apply_discharge_bucket(train_df, allowed_categories)
-    test_df = apply_discharge_bucket(test_df, allowed_categories)
+    allowed_discharge = fit_bucket_categories(train_df, 'discharge_disposition_label')
+    train_df = apply_bucket(train_df, 'discharge_disposition_label', allowed_discharge, 'discharge_bucket')
+    test_df = apply_bucket(test_df, 'discharge_disposition_label', allowed_discharge, 'discharge_bucket')
 
-    print("Train bucket counts:")
+    allowed_specialty = fit_bucket_categories(train_df, 'medical_specialty')
+    train_df = apply_bucket(train_df, 'medical_specialty', allowed_specialty, 'medical_specialty_bucket')
+    test_df = apply_bucket(test_df, 'medical_specialty', allowed_specialty, 'medical_specialty_bucket')
+
+    allowed_payer = fit_bucket_categories(train_df, 'payer_code')
+    train_df = apply_bucket(train_df, 'payer_code', allowed_payer, 'payer_code_bucket')
+    test_df = apply_bucket(test_df, 'payer_code', allowed_payer, 'payer_code_bucket')
+
+    print("Train discharge bucket counts:")
     print(train_df['discharge_bucket'].value_counts())
-    print("\nTest bucket counts:")
+    print("\nTest discharge bucket counts:")
     print(test_df['discharge_bucket'].value_counts())
+
+    print("\nTrain medical_specialty bucket counts:")
+    print(train_df['medical_specialty_bucket'].value_counts())
+    print("\nTest medical_specialty bucket counts:")
+    print(test_df['medical_specialty_bucket'].value_counts())
+
+    print("\nTrain payer_code bucket counts:")
+    print(train_df['payer_code_bucket'].value_counts())
+    print("\nTest payer_code bucket counts:")
+    print(test_df['payer_code_bucket'].value_counts())
