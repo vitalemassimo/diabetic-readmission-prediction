@@ -201,6 +201,49 @@ def apply_bucket(df, column, allowed_categories, new_column):
     return df
 
 
+def encode_a1c(df):
+    """
+    Encode A1Cresult as a tested flag plus an ordinal severity value.
+
+    'Not Tested' isn't a point on the severity scale (We found it has
+    the highest readmission rate of all four categories, contradicting a
+    naive severity reading), so it gets its own binary flag rather than
+    a position on the ordinal scale. The ordinal value for untested rows
+    is set to the scale's midpoint, minimizing the spurious contribution
+    it would otherwise add to a linear model like logistic regression,
+    where the ordinal term can't be conditionally ignored the way a tree
+    can ignore it based on the flag.
+    """
+    df = df.copy()
+    ordinal_map = {'Norm': 0, '>7': 1, '>8': 2}
+    df['a1c_tested'] = (df['A1Cresult'] != 'Not Tested').astype(int)
+    df['a1c_ordinal'] = df['A1Cresult'].map(ordinal_map).fillna(1).astype(int)
+    return df
+
+
+def encode_glucose(df):
+    """Same tested-flag-plus-ordinal treatment as A1Cresult, for max_glu_serum."""
+    df = df.copy()
+    ordinal_map = {'Norm': 0, '>200': 1, '>300': 2}
+    df['glucose_tested'] = (df['max_glu_serum'] != 'Not Tested').astype(int)
+    df['glucose_ordinal'] = df['max_glu_serum'].map(ordinal_map).fillna(1).astype(int)
+    return df
+
+
+def encode_insulin(df):
+    """
+    Encode insulin as an on-insulin flag plus an ordinal dose-direction
+    value, reusing the same split established in EDA ('No' answers
+    a different question than dose direction). The placeholder for 'No'
+    rows is Steady's value (1), the scale's natural midpoint.
+    """
+    df = df.copy()
+    ordinal_map = {'Down': 0, 'Steady': 1, 'Up': 2}
+    df['insulin_used'] = (df['insulin'] != 'No').astype(int)
+    df['insulin_ordinal'] = df['insulin'].map(ordinal_map).fillna(1).astype(int)
+    return df
+
+
 if __name__ == "__main__":
     df = load_raw_data()
     df = build_target(df)
@@ -226,6 +269,15 @@ if __name__ == "__main__":
     train_df = apply_bucket(train_df, 'payer_code', allowed_payer, 'payer_code_bucket')
     test_df = apply_bucket(test_df, 'payer_code', allowed_payer, 'payer_code_bucket')
 
+    train_df = encode_a1c(train_df)
+    test_df = encode_a1c(test_df)
+
+    train_df = encode_glucose(train_df)
+    test_df = encode_glucose(test_df)
+
+    train_df = encode_insulin(train_df)
+    test_df = encode_insulin(test_df)
+
     print("Train discharge bucket counts:")
     print(train_df['discharge_bucket'].value_counts())
     print("\nTest discharge bucket counts:")
@@ -240,3 +292,18 @@ if __name__ == "__main__":
     print(train_df['payer_code_bucket'].value_counts())
     print("\nTest payer_code bucket counts:")
     print(test_df['payer_code_bucket'].value_counts())
+
+    print("\nTrain a1c_tested counts:")
+    print(train_df['a1c_tested'].value_counts())
+    print("\nTrain a1c_ordinal counts:")
+    print(train_df['a1c_ordinal'].value_counts())
+
+    print("\nTrain glucose_tested counts:")
+    print(train_df['glucose_tested'].value_counts())
+    print("\nTrain glucose_ordinal counts:")
+    print(train_df['glucose_ordinal'].value_counts())
+
+    print("\nTrain insulin_used counts:")
+    print(train_df['insulin_used'].value_counts())
+    print("\nTrain insulin_ordinal counts:")
+    print(train_df['insulin_ordinal'].value_counts())
