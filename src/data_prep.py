@@ -230,17 +230,59 @@ def encode_glucose(df):
     return df
 
 
-def encode_insulin(df):
+ALL_MED_COLUMNS = [
+    'metformin', 'repaglinide', 'nateglinide', 'chlorpropamide', 'glimepiride',
+    'acetohexamide', 'glipizide', 'glyburide', 'tolbutamide', 'pioglitazone',
+    'rosiglitazone', 'acarbose', 'miglitol', 'troglitazone', 'tolazamide',
+    'examide', 'citoglipton', 'insulin', 'glyburide-metformin', 'glipizide-metformin',
+    'glimepiride-pioglitazone', 'metformin-rosiglitazone', 'metformin-pioglitazone'
+]
+
+
+def fit_medication_columns_to_drop(train_df, columns, min_used_count=500):
     """
-    Encode insulin as an on-insulin flag plus an ordinal dose-direction
-    value, reusing the same split established in EDA ('No' answers
-    a different question than dose direction). The placeholder for 'No'
-    rows is Steady's value (1), the scale's natural midpoint.
+    Identify medication columns with fewer than min_used_count patients
+    showing any non-'No' value, fit on train only.
+
+    Mirrors the reliability threshold already used for bucketing rare
+    discharge-disposition and medical-specialty categories: a column
+    this rare carries no trustworthy pattern for a model to learn,
+    regardless of how it's encoded.
+    """
+    to_drop = []
+    for col in columns:
+        used_count = (train_df[col] != 'No').sum()
+        if used_count < min_used_count:
+            to_drop.append(col)
+    return to_drop
+
+
+def drop_low_signal_medications(df, columns_to_drop):
+    """Drop the medication columns identified as too rare to be useful."""
+    df = df.copy()
+    df = df.drop(columns=columns_to_drop)
+    return df
+
+
+def encode_medication(df, column):
+    """
+    Encode a medication column as a used flag plus an ordinal dose-
+    direction value. Generalizes encode_insulin to any column sharing
+    the same No/Down/Steady/Up structure, since every retained
+    medication column has this exact shape.
+
+    'No' answers a different question (was this medication part of
+    treatment at all) than the dose-direction categories, so it gets
+    its own flag rather than a position on the ordinal scale. The
+    placeholder for 'No' rows is Steady's value (1), the scale's
+    natural midpoint, minimizing the spurious contribution it would add
+    to a linear model that can't conditionally ignore the ordinal term
+    the way a tree can.
     """
     df = df.copy()
     ordinal_map = {'Down': 0, 'Steady': 1, 'Up': 2}
-    df['insulin_used'] = (df['insulin'] != 'No').astype(int)
-    df['insulin_ordinal'] = df['insulin'].map(ordinal_map).fillna(1).astype(int)
+    df[f'{column}_used'] = (df[column] != 'No').astype(int)
+    df[f'{column}_ordinal'] = df[column].map(ordinal_map).fillna(1).astype(int)
     return df
 
 
@@ -275,8 +317,14 @@ if __name__ == "__main__":
     train_df = encode_glucose(train_df)
     test_df = encode_glucose(test_df)
 
-    train_df = encode_insulin(train_df)
-    test_df = encode_insulin(test_df)
+    med_columns_to_drop = fit_medication_columns_to_drop(train_df, ALL_MED_COLUMNS)
+    train_df = drop_low_signal_medications(train_df, med_columns_to_drop)
+    test_df = drop_low_signal_medications(test_df, med_columns_to_drop)
+
+    med_columns_to_encode = [c for c in ALL_MED_COLUMNS if c not in med_columns_to_drop]
+    for col in med_columns_to_encode:
+        train_df = encode_medication(train_df, col)
+        test_df = encode_medication(test_df, col)
 
     print("Train discharge bucket counts:")
     print(train_df['discharge_bucket'].value_counts())
@@ -303,7 +351,13 @@ if __name__ == "__main__":
     print("\nTrain glucose_ordinal counts:")
     print(train_df['glucose_ordinal'].value_counts())
 
-    print("\nTrain insulin_used counts:")
-    print(train_df['insulin_used'].value_counts())
-    print("\nTrain insulin_ordinal counts:")
-    print(train_df['insulin_ordinal'].value_counts())
+    print("\nMedication columns dropped:", med_columns_to_drop)
+    print("Medication columns encoded:", med_columns_to_encode)
+
+    print("\nTrain metformin_used counts:")
+    print(train_df['metformin_used'].value_counts())
+    print("Train metformin_ordinal counts:")
+    print(train_df['metformin_ordinal'].value_counts())
+
+    print("\nTrain shape after medication drop/encode:", train_df.shape)
+    print("Test shape after medication drop/encode:", test_df.shape)
