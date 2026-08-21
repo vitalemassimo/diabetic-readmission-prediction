@@ -132,14 +132,18 @@ def split_data(df, test_size=0.2, random_state=42):
     return train_df, test_df
 
 
-def load_discharge_map():
+def load_id_mapping(block_index):
     """
-    Parse IDS_mapping.csv into a dict for
-    discharge_disposition_id.
+    Parse IDS_mapping.csv into a code -> label dict for one of its three
+    stacked lookup tables, selected by block_index: admission_type_id
+    (0), discharge_disposition_id (1), admission_source_id (2).
 
-    The raw file needed for feature engineering is only the numeric code;
-    the human-readable label is needed here so that bucketing decisions
-    (which categories are common enough to keep) can be made on
+    Generalizes the discharge-specific loader to any of the three tables,
+    since admission_type_id and admission_source_id have the same
+    numeric code standing in for a category structure and were never
+    actually decoded anywhere in this pipeline. The raw file needed for
+    feature engineering is only the numeric code; the human-readable
+    label is needed here so bucketing decisions can be made on
     interpretable labels rather than opaque integer codes.
     """
     with open(DATA_RAW / "IDS_mapping.csv") as f:
@@ -157,7 +161,7 @@ def load_discharge_map():
     if current:
         blocks.append(current)
 
-    reader = csv.reader(io.StringIO('\n'.join(blocks[1])))
+    reader = csv.reader(io.StringIO('\n'.join(blocks[block_index])))
     next(reader)
     mapping = {}
     for row in reader:
@@ -168,10 +172,10 @@ def load_discharge_map():
     return mapping
 
 
-def add_discharge_label(df, discharge_map):
-    """Attach the human-readable discharge disposition label to each row."""
+def add_id_label(df, id_column, mapping, new_column):
+    """Attach a human-readable label to a numeric ID column, using a pre-parsed code -> label mapping."""
     df = df.copy()
-    df['discharge_disposition_label'] = df['discharge_disposition_id'].map(discharge_map)
+    df[new_column] = df[id_column].map(mapping)
     return df
 
 
@@ -367,6 +371,72 @@ def categorize_icd9(code):
     return 'Other'
 
 
+def encode_age(df):
+    """
+    Encode age as an ordinal value from its bracketed 10-year ranges.
+
+    The brackets have a genuine order (younger to older), unlike race or
+    the bucket columns, so ordinal encoding is appropriate rather than
+    one-hot. Unlike A1Cresult or insulin, there's no 'different question'
+    category here needing a separate flag, every row has a real,
+    ordered age bracket, so a plain fixed mapping is enough.
+    """
+    df = df.copy()
+    age_order = ['[0-10)', '[10-20)', '[20-30)', '[30-40)', '[40-50)',
+                 '[50-60)', '[60-70)', '[70-80)', '[80-90)', '[90-100)']
+    age_map = {bracket: i for i, bracket in enumerate(age_order)}
+    df['age_ordinal'] = df['age'].map(age_map)
+    return df
+
+
+def encode_binary_flag(df, column, positive_value):
+    """
+    Encode a genuinely two-category string column as 0/1.
+
+    change ('Ch'/'No') and diabetesMed ('Yes'/'No') have no 'different
+    question' category the way A1Cresult's Not Tested or insulin's No
+    did, so a plain binary flag is enough, no ordinal value, no
+    fit-on-train step needed.
+    """
+    df = df.copy()
+    df[f'{column}_flag'] = (df[column] == positive_value).astype(int)
+    return df
+
+
+def drop_redundant_raw_columns(df, columns_to_drop):
+    """
+    Drop raw columns superseded by an engineered encoding, plus the
+    pre-binarized target and the patient identifier.
+
+    A1Cresult/max_glu_serum/age, change/diabetesMed, and the retained
+    medication columns are now fully represented by their encoded
+    versions; discharge_disposition_id/_label, medical_specialty,
+    payer_code, admission_type_id/_label, admission_source_id/_label,
+    and diag_1/2/3 (plus their intermediate category columns) are fully
+    represented by their one-hot bucket columns. readmitted is the
+    pre-binarized target, keeping it would leak the label directly
+    into the feature set. patient_nbr has already served its only
+    legitimate purpose (grouping the train/test split) and carries no
+    clinical meaning as a feature.
+    """
+    df = df.copy()
+    return df.drop(columns=columns_to_drop)
+
+
+def save_processed_data(train_df, test_df):
+    """
+    Save the final leakage-safe, fully encoded train/test datasets to
+    data/processed/, in Parquet format.
+
+    Parquet preserves dtypes exactly and is faster and
+    smaller to read, the right tradeoff here since this file is only
+    ever read back in programmatically by train.py, not opened by a
+    human.
+    """
+    DATA_PROCESSED.mkdir(parents=True, exist_ok=True)
+    train_df.to_parquet(DATA_PROCESSED / "train.parquet", index=False)
+    test_df.to_parquet(DATA_PROCESSED / "test.parquet", index=False)
+
 if __name__ == "__main__":
     df = load_raw_data()
     df = build_target(df)
@@ -377,9 +447,17 @@ if __name__ == "__main__":
 
     train_df, test_df = split_data(df)
 
-    discharge_map = load_discharge_map()
-    train_df = add_discharge_label(train_df, discharge_map)
-    test_df = add_discharge_label(test_df, discharge_map)
+    discharge_map = load_id_mapping(1)
+    train_df = add_id_label(train_df, 'discharge_disposition_id', discharge_map, 'discharge_disposition_label')
+    test_df = add_id_label(test_df, 'discharge_disposition_id', discharge_map, 'discharge_disposition_label')
+
+    admission_type_map = load_id_mapping(0)
+    train_df = add_id_label(train_df, 'admission_type_id', admission_type_map, 'admission_type_label')
+    test_df = add_id_label(test_df, 'admission_type_id', admission_type_map, 'admission_type_label')
+
+    admission_source_map = load_id_mapping(2)
+    train_df = add_id_label(train_df, 'admission_source_id', admission_source_map, 'admission_source_label')
+    test_df = add_id_label(test_df, 'admission_source_id', admission_source_map, 'admission_source_label')
 
     allowed_discharge = fit_bucket_categories(train_df, 'discharge_disposition_label')
     train_df = apply_bucket(train_df, 'discharge_disposition_label', allowed_discharge, 'discharge_bucket')
@@ -393,11 +471,22 @@ if __name__ == "__main__":
     train_df = apply_bucket(train_df, 'payer_code', allowed_payer, 'payer_code_bucket')
     test_df = apply_bucket(test_df, 'payer_code', allowed_payer, 'payer_code_bucket')
 
+    allowed_admission_type = fit_bucket_categories(train_df, 'admission_type_label')
+    train_df = apply_bucket(train_df, 'admission_type_label', allowed_admission_type, 'admission_type_bucket')
+    test_df = apply_bucket(test_df, 'admission_type_label', allowed_admission_type, 'admission_type_bucket')
+
+    allowed_admission_source = fit_bucket_categories(train_df, 'admission_source_label')
+    train_df = apply_bucket(train_df, 'admission_source_label', allowed_admission_source, 'admission_source_bucket')
+    test_df = apply_bucket(test_df, 'admission_source_label', allowed_admission_source, 'admission_source_bucket')
+
     train_df = encode_a1c(train_df)
     test_df = encode_a1c(test_df)
 
     train_df = encode_glucose(train_df)
     test_df = encode_glucose(test_df)
+
+    train_df = encode_age(train_df)
+    test_df = encode_age(test_df)
 
     med_columns_to_drop = fit_medication_columns_to_drop(train_df, ALL_MED_COLUMNS)
     train_df = drop_low_signal_medications(train_df, med_columns_to_drop)
@@ -417,22 +506,38 @@ if __name__ == "__main__":
         train_df = apply_bucket(train_df, f'{col}_category', allowed_diag, f'{col}_bucket')
         test_df = apply_bucket(test_df, f'{col}_category', allowed_diag, f'{col}_bucket')
 
+    train_df = encode_binary_flag(train_df, 'change', 'Ch')
+    test_df = encode_binary_flag(test_df, 'change', 'Ch')
+
+    train_df = encode_binary_flag(train_df, 'diabetesMed', 'Yes')
+    test_df = encode_binary_flag(test_df, 'diabetesMed', 'Yes')
+
     nominal_columns = [
         'race', 'gender', 'discharge_bucket', 'medical_specialty_bucket', 'payer_code_bucket',
+        'admission_type_bucket', 'admission_source_bucket',
         'diag_1_bucket', 'diag_2_bucket', 'diag_3_bucket'
     ]
     onehot_categories = fit_onehot_categories(train_df, nominal_columns)
     train_df = apply_onehot(train_df, onehot_categories)
     test_df = apply_onehot(test_df, onehot_categories)
 
-    print("Train shape after one-hot encoding:", train_df.shape)
-    print("Test shape after one-hot encoding:", test_df.shape)
+    raw_columns_to_drop = (
+        ['A1Cresult', 'max_glu_serum', 'age'] +
+        med_columns_to_encode +
+        ['discharge_disposition_id', 'discharge_disposition_label', 'medical_specialty', 'payer_code'] +
+        ['admission_type_id', 'admission_type_label', 'admission_source_id', 'admission_source_label'] +
+        ['diag_1', 'diag_2', 'diag_3', 'diag_1_category', 'diag_2_category', 'diag_3_category'] +
+        ['change', 'diabetesMed'] +
+        ['readmitted', 'patient_nbr']
+    )
+    train_df = drop_redundant_raw_columns(train_df, raw_columns_to_drop)
+    test_df = drop_redundant_raw_columns(test_df, raw_columns_to_drop)
 
-    print("\ndiag_1 bucket counts (train):")
-    print(train_df[[c for c in train_df.columns if c.startswith('diag_1_bucket_')]].sum().sort_values(ascending=False))
+    print("Final train shape:", train_df.shape)
+    print("Final test shape:", test_df.shape)
 
-    print("\ndiag_2 bucket counts (train):")
-    print(train_df[[c for c in train_df.columns if c.startswith('diag_2_bucket_')]].sum().sort_values(ascending=False))
+    print("\nRemaining string/object columns (should be empty before saving):")
+    print(train_df.select_dtypes(include='object').columns.tolist())
 
-    print("\ndiag_3 bucket counts (train):")
-    print(train_df[[c for c in train_df.columns if c.startswith('diag_3_bucket_')]].sum().sort_values(ascending=False))
+    save_processed_data(train_df, test_df)
+    print(f"\nSaved processed train/test data to {DATA_PROCESSED}")
