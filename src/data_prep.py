@@ -57,6 +57,19 @@ def exclude_expired_hospice(df):
     return df
 
 
+def exclude_unknown_gender(df):
+    """
+    Drop the handful of rows where gender is recorded as Unknown/Invalid.
+
+    This is a fixed data-validity rule, not a statistic learned from the
+    data's distribution, so it belongs with the other whole-dataset
+    exclusions applied before the train/test split, rather than something
+    fit on train and applied to test.
+    """
+    df = df.copy()
+    return df[df['gender'] != 'Unknown/Invalid']
+
+
 def handle_missing_values(df):
     """
     Handle missing values in weight, specialty/payer, and race/diagnosis.
@@ -286,10 +299,33 @@ def encode_medication(df, column):
     return df
 
 
+def fit_onehot_categories(train_df, columns):
+    """
+    Learn each nominal column's fixed category list, using train only, so
+    every split produces the same set of dummy columns regardless of which
+    categories happen to appear there.
+    """
+    return {col: sorted(train_df[col].dropna().unique()) for col in columns}
+
+
+def apply_onehot(df, categories_by_column):
+    """
+    One-hot encode nominal columns against a pre-fitted category list per
+    column. A value not in the fitted list becomes NaN before encoding, which produces
+    an all-zero row across that column's dummies rather than a new, inconsistent one.
+    """
+    df = df.copy()
+    for col, categories in categories_by_column.items():
+        df[col] = pd.Categorical(df[col], categories=categories)
+    df = pd.get_dummies(df, columns=list(categories_by_column.keys()))
+    return df
+
+
 if __name__ == "__main__":
     df = load_raw_data()
     df = build_target(df)
     df = exclude_expired_hospice(df)
+    df = exclude_unknown_gender(df)
     df = handle_missing_values(df)
     df = handle_lab_result_missingness(df)
 
@@ -326,38 +362,25 @@ if __name__ == "__main__":
         train_df = encode_medication(train_df, col)
         test_df = encode_medication(test_df, col)
 
-    print("Train discharge bucket counts:")
-    print(train_df['discharge_bucket'].value_counts())
-    print("\nTest discharge bucket counts:")
-    print(test_df['discharge_bucket'].value_counts())
+    nominal_columns = ['race', 'gender', 'discharge_bucket', 'medical_specialty_bucket', 'payer_code_bucket']
+    onehot_categories = fit_onehot_categories(train_df, nominal_columns)
+    train_df = apply_onehot(train_df, onehot_categories)
+    test_df = apply_onehot(test_df, onehot_categories)
 
-    print("\nTrain medical_specialty bucket counts:")
-    print(train_df['medical_specialty_bucket'].value_counts())
-    print("\nTest medical_specialty bucket counts:")
-    print(test_df['medical_specialty_bucket'].value_counts())
+    print("Train shape after one-hot encoding:", train_df.shape)
+    print("Test shape after one-hot encoding:", test_df.shape)
 
-    print("\nTrain payer_code bucket counts:")
-    print(train_df['payer_code_bucket'].value_counts())
-    print("\nTest payer_code bucket counts:")
-    print(test_df['payer_code_bucket'].value_counts())
+    print("\nGender-related columns:")
+    print([c for c in train_df.columns if c.startswith('gender_')])
 
-    print("\nTrain a1c_tested counts:")
-    print(train_df['a1c_tested'].value_counts())
-    print("\nTrain a1c_ordinal counts:")
-    print(train_df['a1c_ordinal'].value_counts())
+    print("\nRace-related columns:")
+    print([c for c in train_df.columns if c.startswith('race_')])
 
-    print("\nTrain glucose_tested counts:")
-    print(train_df['glucose_tested'].value_counts())
-    print("\nTrain glucose_ordinal counts:")
-    print(train_df['glucose_ordinal'].value_counts())
+    print("\nDischarge bucket-related columns:")
+    print([c for c in train_df.columns if c.startswith('discharge_bucket_')])
 
-    print("\nMedication columns dropped:", med_columns_to_drop)
-    print("Medication columns encoded:", med_columns_to_encode)
+    print("\nMedical specialty bucket-related columns:")
+    print([c for c in train_df.columns if c.startswith('medical_specialty_bucket_')])
 
-    print("\nTrain metformin_used counts:")
-    print(train_df['metformin_used'].value_counts())
-    print("Train metformin_ordinal counts:")
-    print(train_df['metformin_ordinal'].value_counts())
-
-    print("\nTrain shape after medication drop/encode:", train_df.shape)
-    print("Test shape after medication drop/encode:", test_df.shape)
+    print("\nPayer code bucket-related columns:")
+    print([c for c in train_df.columns if c.startswith('payer_code_bucket_')])
