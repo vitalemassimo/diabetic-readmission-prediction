@@ -321,6 +321,52 @@ def apply_onehot(df, categories_by_column):
     return df
 
 
+def categorize_icd9(code):
+    """
+    Map a raw ICD9 diagnosis code to a clinically meaningful category
+    using the standard ICD9 chapter ranges, rather than bucketing by
+    per-code frequency.
+
+    diag_1/diag_2/diag_3 each have hundreds of distinct codes, most
+    individually rare, so a frequency threshold (as used for
+    medical_specialty/payer_code) would collapse nearly the entire
+    column into 'Other' and destroy the clinical signal a diagnosis
+    category carries. This mirrors the categorization used in the
+    dataset's origin paper (Strack et al., 2014).
+    """
+    if pd.isna(code):
+        return 'Missing'
+
+    code = str(code)
+    if code.startswith('V'):
+        return 'Supplemental_V'
+    if code.startswith('E'):
+        return 'External_E'
+
+    try:
+        numeric_code = float(code)
+    except ValueError:
+        return 'Other'
+
+    if 250 <= numeric_code < 251:
+        return 'Diabetes'
+    if 390 <= numeric_code <= 459 or numeric_code == 785:
+        return 'Circulatory'
+    if 460 <= numeric_code <= 519 or numeric_code == 786:
+        return 'Respiratory'
+    if 520 <= numeric_code <= 579 or numeric_code == 787:
+        return 'Digestive'
+    if 800 <= numeric_code <= 999:
+        return 'Injury'
+    if 710 <= numeric_code <= 739:
+        return 'Musculoskeletal'
+    if 580 <= numeric_code <= 629 or numeric_code == 788:
+        return 'Genitourinary'
+    if 140 <= numeric_code <= 239:
+        return 'Neoplasms'
+    return 'Other'
+
+
 if __name__ == "__main__":
     df = load_raw_data()
     df = build_target(df)
@@ -362,7 +408,19 @@ if __name__ == "__main__":
         train_df = encode_medication(train_df, col)
         test_df = encode_medication(test_df, col)
 
-    nominal_columns = ['race', 'gender', 'discharge_bucket', 'medical_specialty_bucket', 'payer_code_bucket']
+    for col in ['diag_1', 'diag_2', 'diag_3']:
+        train_df[f'{col}_category'] = train_df[col].apply(categorize_icd9)
+        test_df[f'{col}_category'] = test_df[col].apply(categorize_icd9)
+
+    for col in ['diag_1', 'diag_2', 'diag_3']:
+        allowed_diag = fit_bucket_categories(train_df, f'{col}_category')
+        train_df = apply_bucket(train_df, f'{col}_category', allowed_diag, f'{col}_bucket')
+        test_df = apply_bucket(test_df, f'{col}_category', allowed_diag, f'{col}_bucket')
+
+    nominal_columns = [
+        'race', 'gender', 'discharge_bucket', 'medical_specialty_bucket', 'payer_code_bucket',
+        'diag_1_bucket', 'diag_2_bucket', 'diag_3_bucket'
+    ]
     onehot_categories = fit_onehot_categories(train_df, nominal_columns)
     train_df = apply_onehot(train_df, onehot_categories)
     test_df = apply_onehot(test_df, onehot_categories)
@@ -370,17 +428,11 @@ if __name__ == "__main__":
     print("Train shape after one-hot encoding:", train_df.shape)
     print("Test shape after one-hot encoding:", test_df.shape)
 
-    print("\nGender-related columns:")
-    print([c for c in train_df.columns if c.startswith('gender_')])
+    print("\ndiag_1 bucket counts (train):")
+    print(train_df[[c for c in train_df.columns if c.startswith('diag_1_bucket_')]].sum().sort_values(ascending=False))
 
-    print("\nRace-related columns:")
-    print([c for c in train_df.columns if c.startswith('race_')])
+    print("\ndiag_2 bucket counts (train):")
+    print(train_df[[c for c in train_df.columns if c.startswith('diag_2_bucket_')]].sum().sort_values(ascending=False))
 
-    print("\nDischarge bucket-related columns:")
-    print([c for c in train_df.columns if c.startswith('discharge_bucket_')])
-
-    print("\nMedical specialty bucket-related columns:")
-    print([c for c in train_df.columns if c.startswith('medical_specialty_bucket_')])
-
-    print("\nPayer code bucket-related columns:")
-    print([c for c in train_df.columns if c.startswith('payer_code_bucket_')])
+    print("\ndiag_3 bucket counts (train):")
+    print(train_df[[c for c in train_df.columns if c.startswith('diag_3_bucket_')]].sum().sort_values(ascending=False))
