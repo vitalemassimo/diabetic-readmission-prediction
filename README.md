@@ -68,6 +68,8 @@ diabetic-readmission-prediction/
 python -m venv venv
 source venv/bin/activate  # or venv\Scripts\activate on Windows
 pip install -r requirements.txt
+# macOS only — required for XGBoost:
+brew install libomp
 ```
 
 Download the dataset from Kaggle (see `data/raw/README.md`), place `diabetic_data.csv` in `data/raw/`, then:
