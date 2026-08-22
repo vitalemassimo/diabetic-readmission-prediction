@@ -7,6 +7,9 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score, average_precision_score
 import joblib
+import xgboost as xgb
+from sklearn.model_selection import StratifiedKFold, RandomizedSearchCV
+
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_PROCESSED = PROJECT_ROOT / "data" / "processed"
@@ -148,6 +151,51 @@ def save_baseline_artifacts(model, scaler, reference_by_prefix, med_cap, feature
     joblib.dump(feature_columns, MODELS_DIR / "feature_columns.joblib")
 
 
+def prepare_tree_features(train_df, test_df):
+    """
+    Model-ready X/y for XGBoost: no reference-category drop, no
+    medication cap, no scaling — none of these apply to trees.
+    """
+    X_train, y_train = split_features_target(train_df)
+    X_test, y_test = split_features_target(test_df)
+    return X_train, X_test, y_train, y_test
+
+
+def train_xgboost(X_train, y_train):
+    """Fit XGBoost, using scale_pos_weight to counter the ~11% positive rate."""
+    scale_pos_weight = (y_train == 0).sum() / (y_train == 1).sum()
+    model = xgb.XGBClassifier(
+        scale_pos_weight=scale_pos_weight,
+        eval_metric='logloss',
+        random_state=42
+    )
+    model.fit(X_train, y_train)
+    return model
+
+def tune_xgboost(X_train, y_train):
+    """Random search over XGBoost hyperparameters, 5-fold CV scored on PR-AUC."""
+    scale_pos_weight = (y_train == 0).sum() / (y_train == 1).sum()
+    base_model = xgb.XGBClassifier(
+        scale_pos_weight=scale_pos_weight,
+        eval_metric='logloss',
+        random_state=42
+    )
+    param_distributions = {
+        'max_depth': [3, 4, 5, 6],
+        'learning_rate': [0.01, 0.05, 0.1],
+        'n_estimators': [100, 200, 400],
+        'subsample': [0.7, 0.85, 1.0],
+        'colsample_bytree': [0.7, 0.85, 1.0],
+    }
+    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    search = RandomizedSearchCV(
+        base_model, param_distributions, n_iter=20, scoring='average_precision',
+        cv=cv, random_state=42, n_jobs=-1
+    )
+    search.fit(X_train, y_train)
+    return search.best_estimator_, search.best_params_
+
+
 if __name__ == "__main__":
     train_df, test_df = load_processed_data()
     (X_train, X_test, y_train, y_test,
@@ -167,3 +215,21 @@ if __name__ == "__main__":
 
     save_baseline_artifacts(model_plain, scaler, reference_by_prefix, med_cap, feature_columns)
     print("\nSaved plain logistic regression baseline and preprocessing artifacts to models/")
+
+    X_train_tree, X_test_tree, y_train_tree, y_test_tree = prepare_tree_features(train_df, test_df)
+    model_xgb = train_xgboost(X_train_tree, y_train_tree)
+    proba_xgb = model_xgb.predict_proba(X_test_tree)[:, 1]
+    print("\nXGBoost (default params):")
+    print("  AUC-ROC:", roc_auc_score(y_test_tree, proba_xgb))
+    print("  PR-AUC:", average_precision_score(y_test_tree, proba_xgb))
+
+    model_xgb_tuned, best_params = tune_xgboost(X_train_tree, y_train_tree)
+    proba_xgb_tuned = model_xgb_tuned.predict_proba(X_test_tree)[:, 1]
+    print("\nXGBoost (tuned via RandomizedSearchCV):")
+    print("  Best params:", best_params)
+    print("  AUC-ROC:", roc_auc_score(y_test_tree, proba_xgb_tuned))
+    print("  PR-AUC:", average_precision_score(y_test_tree, proba_xgb_tuned))
+
+    MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    joblib.dump(model_xgb_tuned, MODELS_DIR / "xgboost_tuned.joblib")
+    print("Saved tuned XGBoost model to models/")
